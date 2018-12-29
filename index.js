@@ -1,3 +1,16 @@
+//used to connect to the database
+const Firestore = require('@google-cloud/firestore');
+
+//how we will access our database to store cookies
+const cookieTableName = process.env.cookieTableName;
+const cookieId = parseInt(process.env.cookieId);
+const myProjectId = process.env.myProjectId;
+
+//our firestore reference so we can authenticate connecting
+const firestore = new Firestore({
+	projectId: myProjectId
+});
+
 //used as web driver to browse the web
 const puppeteer = require('puppeteer');
 
@@ -19,6 +32,9 @@ const desktopHeight = parseInt(process.env.desktopHeight);
 //facebook page that contains login
 const homepage = process.env.homepage;
 
+//what is our account name? used to verify login
+const accountName = 'Kevin';
+
 //how long to wait for a page to load
 const timeoutload = parseInt(process.env.timeoutload);
 
@@ -29,7 +45,7 @@ const waitShort = parseInt(process.env.waitShort);
 const waitLong = parseInt(process.env.waitLong);
 
 //if true, we will hide the browser gui
-const headlessBrowser = true;
+const headless = true;
 
 //our tags to be included in our post
 const tags = process.env.tags;
@@ -45,16 +61,23 @@ Create our browser with the specified user agent and dimensions
 */
 async function getBrowserPage() {
 	
+	//open our browser only once
 	console.log('opening browser');
-	browser = await puppeteer.launch({args: ['--no-sandbox'], headless: headlessBrowser});
+	if (!browser)
+		browser = await puppeteer.launch({args: ['--no-sandbox'], headless: headless});
+		
+	//access the page we will be using to browse
 	const page = await browser.newPage();
-
-	console.log('User agent: ' + useragent);
+		
+	//we need to set the user agent as well
+	console.log('user agent: ' + useragent);
 	await page.setUserAgent(useragent);
 	
-	console.log('browser width:' + desktopWidth + ', height:' + desktopHeight);
+	//what is the size of the window we are simulating
+	console.log('window size: w=' + desktopWidth + ', h=' + desktopHeight);
 	await page.setViewport({ width: desktopWidth, height: desktopHeight })
-
+	
+	//return our page
 	return page;
 }
 
@@ -62,6 +85,8 @@ async function getBrowserPage() {
 Get the most recent video post from youtube and construct the text for our facebook post
 */
 async function parseYoutubePost() {
+	
+	var postText = null;
 	
 	var posts = [];
 	
@@ -88,18 +113,16 @@ async function parseYoutubePost() {
 	}
 	
 	//this is how our post will look like
-	const postText = posts[0].title + ' ' + tags + '\n\n' + posts[0].link;
+	postText = posts[0].title + ' ' + tags + '\n\n' + posts[0].link;
+	console.log('Parse text generated...');
 	console.log(postText);
-	
 	return postText;
 }
 
 /**
 Login to facebook
 */
-async function login() {
-	
-	const page = await getBrowserPage();
+async function login(page) {
 	
 	try {
 				
@@ -134,11 +157,34 @@ async function login() {
 			
 			} catch (error) {
 				
-				//if this is the last one and still no success we have to error
+				//if this is the last login button one and still no success, we have a failure
 				if (i == loginButtons.length - 1)
 					throw new Error(error);
 			}
 		}
+		
+		//wait for the page to load after clicking login
+		await page.waitForNavigation();
+		
+		//verify we are logged in
+		var result = await verifyLogin(page);
+		
+		//if we aren't logged in, throw error
+		if (!result) {
+			
+			//at this point we should have been logged in
+			throw new Error('Couldn\'t verify login');
+			
+		} else {
+			
+			//get all cookies and save them for future use
+			const cookies = await page.cookies();
+			console.log(cookies);
+			await saveCookies(JSON.stringify(cookies));
+		}
+		
+		//return success
+		return true;
 		
 	} catch (error) {
 		
@@ -146,7 +192,8 @@ async function login() {
 		throw new Error(error);
 	}
 	
-	return page;
+	//if we made it to this point we have a failure
+	return false;
 }
 
 /**
@@ -230,13 +277,140 @@ async function postOnFacebook(page, postText) {
 	}
 }
 
-async function runAgent(res) {
+async function verifyLogin(page) {
+	
+	try {
+		
+		console.log('verifying login');
+		
+		//opening home page
+		await page.goto(homepage, { timeout: timeoutload });
+		
+		//look for account name tag
+		console.log('checking for account name to ensure we are logged in');
+		const accountNameTag = '._1vp5';
+		await page.waitForSelector(accountNameTag);
+		const element = await page.$(accountNameTag);
+		const text = await (await element.getProperty('textContent')).jsonValue();
+		
+		//if account name is on the page we logged in successfully
+		if (text == accountName) {
+			console.log('we are logged in');
+			return true;
+		} else {
+			console.log('Text not found for account name: "' + text + '"');
+		}
+		
+	} catch (error) {
+		console.log(error);
+	}
+	
+	//we couldn't verify that we are logged in
+	console.log('not logged in');
+	return false;
+}
+
+//load our cookie information (if exists)
+async function loadCookies(page) {
+	
+	//load file data if it exists
+	console.log('loading cookies');
+		
+	//query the table and return the results in our snapshot
+	var snapshot = await firestore.collection(cookieTableName).where('id', '==', cookieId).get();
+	
+	//make sure our objects are not null and has 1 result as expected
+	if (snapshot != null && snapshot.docs != null && snapshot.docs.length == 1) {
+		
+		console.log('parsing cookies');
+		
+		//read text from db and parse to json array
+		var tmpCookies = JSON.parse(snapshot.docs[0].data().cookieData);
+		
+		//inject each cookie into our browser page
+		for (var i = 0; i < tmpCookies.length; i++) {
+			console.log('injecting cookie - ' + tmpCookies[i].name);
+			await page.setCookie(tmpCookies[i]);
+		}
+		
+		//success
+		return true;
+		
+	} else {
+		console.log('cookies not found');
+	}
+	
+	//we weren't successful loading cookies
+	return false;
+}
+
+//here we will add / update the cookies
+async function saveCookies(cookieData) {
+	
+	console.log('Saving cookies');
+	
+	try {
+		
+		//reference our cookie document
+		const cookieRef = firestore.collection(cookieTableName);
+		
+		//query the table and return the results in our snapshot
+		var snapshot = await cookieRef.where('id', '==', cookieId).get();
+		
+		if (snapshot.docs.length < 1) {
+			
+			//if there are no results we will add
+			var result = await cookieRef.add({id: cookieId, cookieData: cookieData});
+			console.log(result);
+			console.log('Cookie(s) added to db');
+			
+		} else {
+			
+			//if cookies already exist we will update
+			var result = await cookieRef.doc(snapshot.docs[0].id).update({cookieData: cookieData});
+			console.log(result);
+			console.log('Cookie(s) updated in db');
+		}
+		
+		//return success
+		return true;
+		
+	} catch (error) {
+		
+		console.log(error);
+		
+		//no success
+		return false;
+	}
+}
+
+async function runCustomAgent(res) {
+	
+	//get our page reference object
+	const page = await getBrowserPage();
 	
 	//what are we going to post on facebook
 	const postText = await parseYoutubePost();
-
-	//login to facebook
-	const page = await login();
+	
+	//were we successful loading cookies?
+	var resultCookie = false;
+	
+	//were we successful verifying the login?
+	var resultVerifyLogin = false;
+	
+	//load our cookies (if they exist)
+	resultCookie = await loadCookies(page);
+	
+	//if we were able to load our cookies, check if we are logged in
+	if (resultCookie)
+		resultVerifyLogin = await verifyLogin(page);
+	
+	//if we were unablel to verify our login, go ahead and do it now
+	if (!resultVerifyLogin) {
+		
+		//login to facebook
+		await login(page);
+	}
 	
 	//now post on facebook
 	await postOnFacebook(page, postText);
@@ -260,9 +434,6 @@ exports.runAgent = (req, res) => {
 	//obtain the keyId from the query string
 	const keyId = req.query.keyId;
 
-	//what are we trying to update
-	const target = req.query.target;
-
 	//notify the key provided
 	console.log("Key provided: " + keyId);
 
@@ -273,7 +444,7 @@ exports.runAgent = (req, res) => {
 		console.log("Key Id valid");
 
 		//execute the process
-		runAgent(res);
+		runCustomAgent(res);
 		
 	} else {
 

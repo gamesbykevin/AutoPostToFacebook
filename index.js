@@ -61,24 +61,43 @@ Create our browser with the specified user agent and dimensions
 */
 async function getBrowserPage() {
 	
-	//open our browser only once
-	console.log('opening browser');
-	if (!browser)
-		browser = await puppeteer.launch({args: ['--no-sandbox'], headless: headless});
-		
-	//access the page we will be using to browse
-	const page = await browser.newPage();
-		
-	//we need to set the user agent as well
-	console.log('user agent: ' + useragent);
-	await page.setUserAgent(useragent);
+	var page;
 	
-	//what is the size of the window we are simulating
-	console.log('window size: w=' + desktopWidth + ', h=' + desktopHeight);
-	await page.setViewport({ width: desktopWidth, height: desktopHeight })
+	//how many attempts to open the browser
+	var count = 0;
+	
+	//here we will continue to create the browser because of anonymous error on google cloud
+	while (true) {
+		
+		//keep track how many times we try to open the browser
+		count = count + 1;
+		
+		try {
+			
+			console.log('opening browser attempt ' + count);
+			browser = await puppeteer.launch({args: ['--no-sandbox'], headless: headless});
+				
+			//access the page we will be using to browse
+			page = await browser.newPage();
+			
+			//we need to set the user agent as well
+			console.log('User agent: ' + useragent);
+			await page.setUserAgent(useragent);
+		
+			//what is the size of the window we are simulating
+			console.log('window size: w=' + desktopWidth + ', h=' + desktopHeight);
+			await page.setViewport({ width: desktopWidth, height: desktopHeight });
+			
+			//if we made it this far we can exit the loop
+			break;
+			
+		} catch (error) {
+			console.log(error);
+		}
+	}
 	
 	//return our page
-	return page;
+	return page;	
 }
 
 /**
